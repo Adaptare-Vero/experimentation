@@ -1,0 +1,495 @@
+From 9f92275998d346cfb57801a69c49606e4adeb79b Mon Sep 17 00:00:00 2001
+From: Codex <codex@local>
+Date: Mon, 11 May 2026 18:49:21 +0200
+Subject: [PATCH] Add Linux live WiFi sensing mode
+
+---
+ ui/services/sensing.service.js                |  11 +-
+ v2/Cargo.lock                                 | 113 +++++++++-
+ .../wifi-densepose-sensing-server/src/main.rs | 204 +++++++++++++++++-
+ 3 files changed, 321 insertions(+), 7 deletions(-)
+
+diff --git a/ui/services/sensing.service.js b/ui/services/sensing.service.js
+index 0992483b..4dfb6c70 100644
+--- a/ui/services/sensing.service.js
++++ b/ui/services/sensing.service.js
+@@ -38,7 +38,7 @@ class SensingService {
+     //   "reconnecting"      — WebSocket disconnected, retrying
+     //   "simulated"         — client-side fallback simulation (server unreachable)
+     this._dataSource = 'reconnecting';
+-    // The raw source string from the server (e.g. "esp32", "simulated", "simulate")
++    // The raw source string from the server (e.g. "esp32", "linux-wifi:<ssid>", "simulate")
+     this._serverSource = null;
+     this._lastMessage = null;
+ 
+@@ -295,7 +295,14 @@ class SensingService {
+    */
+   _applyServerSource(rawSource) {
+     this._serverSource = rawSource;
+-    if (rawSource === 'esp32' || rawSource === 'wifi' || rawSource === 'live') {
++    if (
++      rawSource === 'esp32' ||
++      rawSource === 'wifi' ||
++      rawSource === 'linux' ||
++      rawSource === 'live' ||
++      rawSource.startsWith('wifi:') ||
++      rawSource.startsWith('linux-wifi:')
++    ) {
+       this._setDataSource('live');
+     } else if (rawSource === 'simulated' || rawSource === 'simulate') {
+       this._setDataSource('server-simulated');
+diff --git a/v2/Cargo.lock b/v2/Cargo.lock
+index 2425594e..aa44f11e 100644
+--- a/v2/Cargo.lock
++++ b/v2/Cargo.lock
+@@ -231,6 +231,18 @@ dependencies = [
+  "wait-timeout",
+ ]
+ 
++[[package]]
++name = "async-compression"
++version = "0.4.42"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "e79b3f8a79cccc2898f31920fc69f304859b3bd567490f75ebf51ae1c792a9ac"
++dependencies = [
++ "compression-codecs",
++ "compression-core",
++ "pin-project-lite",
++ "tokio",
++]
++
+ [[package]]
+ name = "async-trait"
+ version = "0.1.89"
+@@ -318,7 +330,7 @@ dependencies = [
+  "sync_wrapper 1.0.2",
+  "tokio",
+  "tokio-tungstenite",
+- "tower",
++ "tower 0.5.3",
+  "tower-layer",
+  "tower-service",
+  "tracing",
+@@ -871,6 +883,23 @@ dependencies = [
+  "memchr",
+ ]
+ 
++[[package]]
++name = "compression-codecs"
++version = "0.4.38"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ce2548391e9c1929c21bf6aa2680af86fe4c1b33e6cea9ac1cfeec0bd11218cf"
++dependencies = [
++ "compression-core",
++ "flate2",
++ "memchr",
++]
++
++[[package]]
++name = "compression-core"
++version = "0.4.32"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cc14f565cf027a105f7a44ccf9e5b424348421a1d8952a8fc9d499d313107789"
++
+ [[package]]
+ name = "concurrent-queue"
+ version = "2.5.0"
+@@ -2371,6 +2400,16 @@ version = "0.16.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+ 
++[[package]]
++name = "hdrhistogram"
++version = "7.5.4"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "765c9198f173dd59ce26ff9f95ef0aafd0a0fe01fb9d72841bc5066a4c06511d"
++dependencies = [
++ "byteorder",
++ "num-traits",
++]
++
+ [[package]]
+ name = "heapless"
+ version = "0.6.1"
+@@ -3892,13 +3931,35 @@ name = "nvsim"
+ version = "0.3.0"
+ dependencies = [
+  "approx 0.5.1",
++ "criterion",
++ "js-sys",
+  "rand 0.8.5",
+  "rand_chacha 0.3.1",
+  "serde",
++ "serde-wasm-bindgen",
+  "serde_json",
+  "sha2",
+  "thiserror 1.0.69",
+  "tracing",
++ "wasm-bindgen",
++]
++
++[[package]]
++name = "nvsim-server"
++version = "0.3.0"
++dependencies = [
++ "axum",
++ "clap",
++ "futures-util",
++ "nvsim",
++ "serde",
++ "serde_json",
++ "thiserror 1.0.69",
++ "tokio",
++ "tower 0.4.13",
++ "tower-http 0.5.2",
++ "tracing",
++ "tracing-subscriber",
+ ]
+ 
+ [[package]]
+@@ -4487,6 +4548,26 @@ dependencies = [
+  "siphasher 1.0.2",
+ ]
+ 
++[[package]]
++name = "pin-project"
++version = "1.1.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "cbf0d9e68100b3a7989b4901972f265cd542e560a3a8a724e1e20322f4d06ce9"
++dependencies = [
++ "pin-project-internal",
++]
++
++[[package]]
++name = "pin-project-internal"
++version = "1.1.12"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a990e22f43e84855daf260dded30524ef4a9021cc7541c26540500a50b624389"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "syn 2.0.117",
++]
++
+ [[package]]
+ name = "pin-project-lite"
+ version = "0.2.17"
+@@ -5278,7 +5359,7 @@ dependencies = [
+  "sync_wrapper 1.0.2",
+  "tokio",
+  "tokio-native-tls",
+- "tower",
++ "tower 0.5.3",
+  "tower-http 0.6.8",
+  "tower-service",
+  "url",
+@@ -5311,7 +5392,7 @@ dependencies = [
+  "sync_wrapper 1.0.2",
+  "tokio",
+  "tokio-util",
+- "tower",
++ "tower 0.5.3",
+  "tower-http 0.6.8",
+  "tower-service",
+  "url",
+@@ -7379,6 +7460,27 @@ dependencies = [
+  "zip 0.6.6",
+ ]
+ 
++[[package]]
++name = "tower"
++version = "0.4.13"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "b8fa9be0de6cf49e536ce1851f987bd21a43b771b09473c3549a6c853db37c1c"
++dependencies = [
++ "futures-core",
++ "futures-util",
++ "hdrhistogram",
++ "indexmap 1.9.3",
++ "pin-project",
++ "pin-project-lite",
++ "rand 0.8.5",
++ "slab",
++ "tokio",
++ "tokio-util",
++ "tower-layer",
++ "tower-service",
++ "tracing",
++]
++
+ [[package]]
+ name = "tower"
+ version = "0.5.3"
+@@ -7401,8 +7503,10 @@ version = "0.5.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
+ dependencies = [
++ "async-compression",
+  "bitflags 2.11.0",
+  "bytes",
++ "futures-core",
+  "futures-util",
+  "http 1.4.0",
+  "http-body 1.0.1",
+@@ -7433,7 +7537,7 @@ dependencies = [
+  "http-body 1.0.1",
+  "iri-string",
+  "pin-project-lite",
+- "tower",
++ "tower 0.5.3",
+  "tower-layer",
+  "tower-service",
+ ]
+@@ -8385,6 +8489,7 @@ dependencies = [
+  "serde",
+  "serde_json",
+  "tokio",
++ "tower-http 0.5.2",
+ ]
+ 
+ [[package]]
+diff --git a/v2/crates/wifi-densepose-sensing-server/src/main.rs b/v2/crates/wifi-densepose-sensing-server/src/main.rs
+index a8b207e4..d4ba26b3 100644
+--- a/v2/crates/wifi-densepose-sensing-server/src/main.rs
++++ b/v2/crates/wifi-densepose-sensing-server/src/main.rs
+@@ -30,6 +30,8 @@ use std::net::SocketAddr;
+ use std::path::PathBuf;
+ use std::sync::Arc;
+ use std::time::Duration;
++#[cfg(target_os = "linux")]
++use std::fs;
+ 
+ use axum::{
+     extract::{
+@@ -95,7 +97,7 @@ struct Args {
+     #[arg(long, default_value = "127.0.0.1", env = "SENSING_BIND_ADDR")]
+     bind_addr: String,
+ 
+-    /// Data source: auto, wifi, esp32, simulate
++    /// Data source: auto, wifi, linux, esp32, simulate
+     #[arg(long, default_value = "auto")]
+     source: String,
+ 
+@@ -1927,6 +1929,194 @@ async fn windows_wifi_fallback_tick(state: &SharedState, seq: u32) {
+     s.latest_update = Some(update);
+ }
+ 
++// ── Linux WiFi RSSI collector ────────────────────────────────────────────────
++
++#[cfg(target_os = "linux")]
++fn parse_proc_net_wireless(output: &str) -> Option<(String, f64, f64)> {
++    for line in output.lines().skip(2) {
++        let trimmed = line.trim();
++        let (iface, rest) = trimmed.split_once(':')?;
++        let cols: Vec<&str> = rest.split_whitespace().collect();
++        if cols.len() < 3 {
++            continue;
++        }
++
++        let quality = cols[1].trim_end_matches('.').parse::<f64>().ok()?;
++        let rssi_dbm = cols[2].trim_end_matches('.').parse::<f64>().ok()?;
++        return Some((iface.trim().to_string(), rssi_dbm, quality));
++    }
++
++    None
++}
++
++#[cfg(target_os = "linux")]
++fn linux_connected_ssid(iface: &str) -> String {
++    let output = std::process::Command::new("iw")
++        .args(["dev", iface, "link"])
++        .output()
++        .ok();
++
++    if let Some(output) = output {
++        let stdout = String::from_utf8_lossy(&output.stdout);
++        for line in stdout.lines() {
++            let line = line.trim();
++            if let Some(ssid) = line.strip_prefix("SSID:") {
++                let ssid = ssid.trim();
++                if !ssid.is_empty() {
++                    return ssid.to_string();
++                }
++            }
++        }
++    }
++
++    iface.to_string()
++}
++
++#[cfg(target_os = "linux")]
++async fn linux_wifi_task(state: SharedState, tick_ms: u64) {
++    let mut interval = tokio::time::interval(Duration::from_millis(tick_ms));
++    let mut seq: u32 = 0;
++
++    info!("Linux WiFi RSSI collector active (tick={}ms)", tick_ms);
++
++    loop {
++        interval.tick().await;
++        seq += 1;
++
++        let proc_wireless = match fs::read_to_string("/proc/net/wireless") {
++            Ok(content) => content,
++            Err(e) => {
++                warn!("Failed to read /proc/net/wireless: {e}");
++                continue;
++            }
++        };
++
++        let (iface, rssi_dbm, quality) = match parse_proc_net_wireless(&proc_wireless) {
++            Some(v) => v,
++            None => {
++                debug!("Linux WiFi collector: no connected wireless interface");
++                continue;
++            }
++        };
++
++        let ssid = linux_connected_ssid(&iface);
++        let signal_pct = (quality / 70.0 * 100.0).clamp(0.0, 100.0);
++
++        let frame = Esp32Frame {
++            magic: 0xC511_0001,
++            node_id: 0,
++            n_antennas: 1,
++            n_subcarriers: 1,
++            freq_mhz: 0,
++            sequence: seq,
++            rssi: rssi_dbm.clamp(-128.0, 127.0) as i8,
++            noise_floor: -90,
++            amplitudes: vec![signal_pct],
++            phases: vec![0.0],
++        };
++
++        let mut s = state.write().await;
++        s.frame_history.push_back(frame.amplitudes.clone());
++        if s.frame_history.len() > FRAME_HISTORY_CAPACITY {
++            s.frame_history.pop_front();
++        }
++
++        let sample_rate_hz = 1000.0 / tick_ms as f64;
++        let (features, mut classification, breathing_rate_hz, sub_variances, raw_motion) =
++            extract_features_from_frame(&frame, &s.frame_history, sample_rate_hz);
++        smooth_and_classify(&mut s, &mut classification, raw_motion);
++        adaptive_override(&s, &features, &mut classification);
++
++        s.source = format!("linux-wifi:{ssid}");
++        s.rssi_history.push_back(rssi_dbm);
++        if s.rssi_history.len() > 60 {
++            s.rssi_history.pop_front();
++        }
++
++        s.tick += 1;
++        let tick = s.tick;
++
++        let motion_score = if classification.motion_level == "active" {
++            0.8
++        } else if classification.motion_level == "present_still" {
++            0.3
++        } else {
++            0.05
++        };
++
++        let raw_vitals = s.vital_detector.process_frame(&frame.amplitudes, &frame.phases);
++        let vitals = smooth_vitals(&mut s, &raw_vitals);
++        s.latest_vitals = vitals.clone();
++
++        let feat_variance = features.variance;
++        let raw_score = compute_person_score(&features);
++        s.smoothed_person_score = s.smoothed_person_score * 0.90 + raw_score * 0.10;
++        let est_persons = if classification.presence {
++            let count = s.person_count();
++            s.prev_person_count = count;
++            count
++        } else {
++            s.prev_person_count = 0;
++            0
++        };
++
++        let mut update = SensingUpdate {
++            msg_type: "sensing_update".to_string(),
++            timestamp: chrono::Utc::now().timestamp_millis() as f64 / 1000.0,
++            source: format!("linux-wifi:{ssid}"),
++            tick,
++            nodes: vec![NodeInfo {
++                node_id: 0,
++                rssi_dbm,
++                position: [0.0, 0.0, 0.0],
++                amplitude: vec![signal_pct],
++                subcarrier_count: 1,
++            }],
++            features,
++            classification,
++            signal_field: generate_signal_field(
++                rssi_dbm, motion_score, breathing_rate_hz,
++                feat_variance.min(1.0), &sub_variances,
++            ),
++            vital_signs: Some(vitals),
++            enhanced_motion: None,
++            enhanced_breathing: None,
++            posture: None,
++            signal_quality_score: Some(signal_pct / 100.0),
++            quality_verdict: None,
++            bssid_count: Some(1),
++            pose_keypoints: None,
++            model_status: None,
++            persons: None,
++            estimated_persons: if est_persons > 0 { Some(est_persons) } else { None },
++            node_features: None,
++        };
++
++        let raw_persons = derive_pose_from_sensing(&update);
++        let mut last_tracker_instant = s.last_tracker_instant.take();
++        let tracked = tracker_bridge::tracker_update(
++            &mut s.pose_tracker, &mut last_tracker_instant, raw_persons,
++        );
++        s.last_tracker_instant = last_tracker_instant;
++        if !tracked.is_empty() {
++            update.persons = Some(tracked);
++        }
++
++        if let Ok(json) = serde_json::to_string(&update) {
++            let _ = s.tx.send(json);
++        }
++        s.latest_update = Some(update);
++    }
++}
++
++#[cfg(target_os = "linux")]
++async fn probe_linux_wifi() -> bool {
++    fs::read_to_string("/proc/net/wireless")
++        .ok()
++        .and_then(|content| parse_proc_net_wireless(&content))
++        .is_some()
++}
++
+ /// Probe if Windows WiFi is connected
+ async fn probe_windows_wifi() -> bool {
+     match tokio::process::Command::new("netsh")
+@@ -4671,6 +4861,9 @@ async fn main() {
+             if probe_esp32(args.udp_port).await {
+                 info!("  ESP32 CSI detected on UDP :{}", args.udp_port);
+                 "esp32"
++            } else if cfg!(target_os = "linux") && probe_linux_wifi().await {
++                info!("  Linux WiFi RSSI detected");
++                "linux"
+             } else if probe_windows_wifi().await {
+                 info!("  Windows WiFi detected");
+                 "wifi"
+@@ -4849,6 +5042,15 @@ async fn main() {
+             tokio::spawn(udp_receiver_task(state.clone(), args.udp_port));
+             tokio::spawn(broadcast_tick_task(state.clone(), args.tick_ms));
+         }
++        #[cfg(target_os = "linux")]
++        "linux" => {
++            tokio::spawn(linux_wifi_task(state.clone(), args.tick_ms));
++        }
++        #[cfg(target_os = "linux")]
++        "wifi" => {
++            tokio::spawn(linux_wifi_task(state.clone(), args.tick_ms));
++        }
++        #[cfg(not(target_os = "linux"))]
+         "wifi" => {
+             tokio::spawn(windows_wifi_task(state.clone(), args.tick_ms));
+         }
+-- 
+2.53.0
